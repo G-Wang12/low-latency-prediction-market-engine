@@ -15,7 +15,13 @@ REFRESH_MS = 1000
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Real-time Trading Dashboard")
 
-st_autorefresh(interval=REFRESH_MS, key="trading_log_refresh")
+with st.sidebar:
+    st.header("Controls")
+    auto_refresh = st.checkbox("Auto-refresh", value=True)
+    st.caption("Tip: disable auto-refresh to stop scroll jumping.")
+
+if auto_refresh:
+    st_autorefresh(interval=REFRESH_MS, key="trading_log_refresh")
 
 st.caption(f"Polling {CSV_PATH} every {REFRESH_MS / 1000:.0f}s")
 
@@ -57,23 +63,27 @@ t0 = float(df["timestamp_us"].iloc[0])
 df["t_seconds"] = (df["timestamp_us"] - t0) / 1_000_000.0
 
 trades = df[df["event_type"] == "T"].copy()
+pnl_points = df[df["event_type"] == "P"].copy()
+if pnl_points.empty:
+    # Fallback: if we don't have periodic mark-to-market points yet, plot whatever we have.
+    pnl_points = df
 
-current_realized = float(df["realized_pnl"].iloc[-1])
+current_pnl = float(pnl_points["realized_pnl"].iloc[-1])
 trade_count = int(len(trades))
 
 col1, col2 = st.columns(2)
-col1.metric("Realized PnL (latest)", f"{current_realized:.6f}")
+col1.metric("PnL (latest)", f"{current_pnl:.6f}")
 col2.metric("Trade events", trade_count)
 
 fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-# Realized PnL time series
+# PnL time series (from periodic 'P' points when available)
 fig.add_trace(
     go.Scatter(
-        x=df["t_seconds"],
-        y=df["realized_pnl"],
+        x=pnl_points["t_seconds"],
+        y=pnl_points["realized_pnl"],
         mode="lines",
-        name="Realized PnL",
+        name="PnL",
     ),
     secondary_y=False,
 )
@@ -94,13 +104,51 @@ if not trades.empty:
     )
 
 fig.update_layout(
-    title="Realized PnL (line) with Trade Prices (markers)",
+    title="PnL (line) with Trade Prices (markers)",
     xaxis_title="Time (s since start)",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     margin=dict(l=40, r=40, t=60, b=40),
 )
 
-fig.update_yaxes(title_text="Realized PnL", secondary_y=False)
+fig.update_yaxes(title_text="PnL", secondary_y=False)
 fig.update_yaxes(title_text="Trade Price", secondary_y=True)
 
 st.plotly_chart(fig, use_container_width=True)
+
+# --- Price movements (mid-price from 'P' events) ---
+st.subheader("Price Movements")
+
+mid_points = df[df["event_type"] == "P"].copy()
+if mid_points.empty:
+    st.info("No mid-price ('P') points yet; price chart will appear after a few seconds.")
+else:
+    price_fig = go.Figure()
+    price_fig.add_trace(
+        go.Scatter(
+            x=mid_points["t_seconds"],
+            y=mid_points["price"],
+            mode="lines",
+            name="Mid Price",
+        )
+    )
+
+    if not trades.empty:
+        price_fig.add_trace(
+            go.Scatter(
+                x=trades["t_seconds"],
+                y=trades["price"],
+                mode="markers",
+                name="Trade Price",
+                marker=dict(size=7),
+                customdata=trades[["size"]],
+                hovertemplate="t=%{x:.6f}s<br>price=%{y}<br>size=%{customdata[0]}<extra></extra>",
+            )
+        )
+
+    price_fig.update_layout(
+        xaxis_title="Time (s since start)",
+        yaxis_title="Price",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=40, r=40, t=10, b=40),
+    )
+    st.plotly_chart(price_fig, use_container_width=True)

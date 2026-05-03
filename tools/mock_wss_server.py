@@ -25,16 +25,20 @@ def make_l2(bids, asks) -> str:
 async def handler(ws) -> None:
     # websockets v15+ passes a single connection object.
     # We accept any target/path.
-    # Emit alternating bid/ask updates that will occasionally create a tight spread.
-    bid = 0.57
-    ask = 0.59
+    # Keep a constant 2-cent spread and move the mid-price around.
+    mid = 0.58
+    spread = 0.02
+    bid = mid - spread / 2.0
+    ask = mid + spread / 2.0
 
     # Size imbalance is what drives microprice momentum in our toy strategy.
-    # We periodically flip which side has the larger size so microprice jumps
-    # by > 1 cent at the transition, triggering occasional trades.
+    # Important: StrategyEngine processes individual MarketTick updates, so we want
+    # the microprice to jump by > 1 cent on a *single* update to reliably trigger trades.
+    # We do that by flipping only the best-bid size while keeping the best-ask size fixed.
     phase_len = 200  # number of messages per phase
-    big = 5000
-    small = 10
+    bid_big = 5000
+    bid_small = 10
+    ask_fixed = 1000
     prev_bid = bid
     prev_ask = ask
 
@@ -51,12 +55,8 @@ async def handler(ws) -> None:
         i = 0
         while True:
             phase = (i // phase_len) % 2
-            if phase == 0:
-                bid_size = big
-                ask_size = small
-            else:
-                bid_size = small
-                ask_size = big
+            bid_size = bid_big if phase == 0 else bid_small
+            ask_size = ask_fixed
 
             # Clear the previous levels so the book doesn't accumulate depth forever.
             # This keeps best bid/ask consistent with a single-level-per-side toy feed.
@@ -73,14 +73,22 @@ async def handler(ws) -> None:
             # Ask update
             await asyncio.sleep(0)
 
-            # Walk prices a bit to vary book state.
+            # Move mid-price in the direction implied by the imbalance phase.
+            # This makes the toy momentum strategy less trivially loss-making.
             prev_bid = bid
             prev_ask = ask
-            bid += 0.01
-            ask += 0.01
-            if bid >= 0.90:
-                bid = 0.10
-                ask = 0.12
+
+            step = 0.01 if phase == 0 else -0.01
+            mid = mid + step
+
+            # Clamp to avoid drifting out of our 1..99 cent book range.
+            if mid > 0.90:
+                mid = 0.90
+            if mid < 0.10:
+                mid = 0.10
+
+            bid = mid - spread / 2.0
+            ask = mid + spread / 2.0
 
             i += 1
 
