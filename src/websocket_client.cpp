@@ -148,7 +148,7 @@ void WebSocketClient::do_read()
                    boost::beast::bind_front_handler(&WebSocketClient::on_read, this));
 }
 
-void WebSocketClient::on_read(boost::beast::error_code ec, std::size_t)
+void WebSocketClient::on_read(boost::beast::error_code ec, std::size_t bytes_transferred)
 {
     if (ec)
     {
@@ -157,16 +157,12 @@ void WebSocketClient::on_read(boost::beast::error_code ec, std::size_t)
     }
 
     const auto buf = read_buffer_.data();
-    const std::size_t len = buf.size();
+    const std::size_t len = bytes_transferred;
     const char *const ptr = static_cast<const char *>(buf.data());
 
     if (ptr != nullptr && len != 0U)
     {
-        MarketTick tick{};
-        if (parser_.parse_tick(std::string_view(ptr, len), tick))
-        {
-            (void)queue_.push(tick);
-        }
+        (void)parser_.parse_tick(std::string_view(ptr, len), queue_);
     }
 
     read_buffer_.consume(read_buffer_.size());

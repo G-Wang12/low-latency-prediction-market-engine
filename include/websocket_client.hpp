@@ -20,7 +20,8 @@
 class WebSocketClient
 {
 public:
-    static constexpr std::size_t kReadBufferBytes = 4096;
+    // L2 snapshot/delta messages can be larger than single-tick mocks.
+    static constexpr std::size_t kReadBufferBytes = 16384;
 
     WebSocketClient(boost::asio::io_context &ioc,
                     boost::asio::ssl::context &ssl_ctx,

@@ -9,8 +9,16 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 
-def make_tick(price: float, size: int, side: str) -> str:
-    msg: Dict[str, Any] = {"price": price, "size": size, "side": side}
+def fmt_price(p: float) -> str:
+    # Real L2 feeds commonly send numeric fields as strings.
+    # Keep two decimals to map directly into integer cents.
+    return f"{p:.2f}"
+
+
+def make_l2(bids, asks) -> str:
+    # Schema:
+    #   {"bids":[["0.57","1200"],...],"asks":[["0.59","500"],...]}
+    msg: Dict[str, Any] = {"bids": bids, "asks": asks}
     return json.dumps(msg, separators=(",", ":"))
 
 
@@ -24,19 +32,30 @@ async def handler(ws) -> None:
     prev_bid = bid
     prev_ask = ask
 
+    async def drain_incoming() -> None:
+        try:
+            async for _ in ws:
+                pass
+        except ConnectionClosed:
+            return
+
+    drain_task = asyncio.create_task(drain_incoming())
+
     try:
         while True:
             # Clear the previous levels so the book doesn't accumulate depth forever.
             # This keeps best bid/ask consistent with a single-level-per-side toy feed.
-            await ws.send(make_tick(prev_bid, 0, "bid"))
-            await ws.send(make_tick(prev_ask, 0, "ask"))
+            await ws.send(
+                make_l2(
+                    bids=[[fmt_price(prev_bid), "0"], [fmt_price(bid), str(size)]],
+                    asks=[[fmt_price(prev_ask), "0"], [fmt_price(ask), str(size)]],
+                )
+            )
 
             # Bid update
-            await ws.send(make_tick(bid, size, "bid"))
             await asyncio.sleep(0)  # yield, but do not block meaningfully
 
             # Ask update
-            await ws.send(make_tick(ask, size, "ask"))
             await asyncio.sleep(0)
 
             # Walk prices a bit to vary book state.
@@ -53,6 +72,8 @@ async def handler(ws) -> None:
     except ConnectionClosed:
         # Normal shutdown: client closed the websocket (e.g. Ctrl+C on engine).
         return
+    finally:
+        drain_task.cancel()
 
 
 async def main() -> None:

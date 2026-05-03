@@ -67,16 +67,25 @@ Why SPSC works here:
 ### Market Data Parser (simdjson on-demand)
 
 - Location: `include/market_parser.hpp`
-- Purpose: convert raw JSON bytes into `MarketTick`.
+- Purpose: convert raw JSON bytes into `MarketTick` updates.
 
 Constraints implemented:
 
 - holds a pre-allocated `simdjson::ondemand::parser` as a member
 - uses a fixed padded buffer (`std::array<char, ...>`) for parsing
-- `parse_tick(std::string_view payload, MarketTick& out)` returns `true/false` (no exceptions)
-- expects fields named `"price"`, `"size"`, `"side"`
+- `parse_tick(std::string_view payload, queue)` returns `true/false` (no exceptions)
+- expects an L2-style schema with nested arrays and **string** numeric fields:
+  - `"bids": [["0.57", "1200"], ...]`
+  - `"asks": [["0.59", "500"], ...]`
+- iterates `bids` and `asks` and **enqueues one `MarketTick` per updated price level** (snapshot or delta)
+- converts string price → integer cents (no floats) and string size → integer using `std::from_chars` (no `std::string` allocations)
 
-Note: real venue payload schemas will likely differ. If your feed doesn’t match this schema, ticks will be dropped (parser returns false).
+Snapshot vs deltas (typical L2 feed behavior):
+
+- On connect, venues often send a full **snapshot** of the book (many price levels)
+- After that, they send **deltas** (small updates) whenever a level changes
+
+Note: real venue payload schemas will likely differ. If your feed doesn’t match this schema, updates will be dropped.
 
 ### WebSocket Client
 
@@ -88,8 +97,8 @@ Responsibilities:
 - async resolve → TCP connect → TLS handshake → websocket handshake
 - after websocket handshake, send a **subscription** message via `async_write()`
 - continuous `async_read()` loop
-- read payload into a fixed-capacity Beast `flat_static_buffer<4096>`
-- parse using `MarketParser`; on success, `queue.push(tick)`
+- read payload into a fixed-capacity Beast `flat_static_buffer<16384>`
+- parse using `MarketParser`; on success, enqueue one `MarketTick` per updated level
 - log errors to `std::cerr` (no exception throwing in hot path)
 
 Current limitations:
@@ -213,7 +222,13 @@ If everything is wired correctly, you should see `mock_exec latency_us=...` prin
 If your endpoint sends JSON frames matching:
 
 ```json
-{ "price": 0.57, "size": 123, "side": "bid" }
+{
+  "bids": [
+    ["0.57", "1200"],
+    ["0.56", "300"]
+  ],
+  "asks": [["0.59", "500"]]
+}
 ```
 
 then the strategy thread will eventually print lines like:
@@ -225,6 +240,6 @@ mock_exec latency_us=12 spread=2 bid=57 ask=59
 ## Next Steps (Practical)
 
 1. Add venue-specific subscribe/auth write after websocket handshake.
-2. Adapt `MarketParser` to the venue’s real message schema.
+2. Replace the placeholder L2 schema with Polymarket’s real snapshot/delta schema (field names, market identifiers, sequencing).
 3. Add reconnection, ping/pong, and proper TLS verification policies.
 4. Add order management + risk checks, and replace mock execution with real order sends.

@@ -1,22 +1,24 @@
 #pragma once
 
 #include <array>
-#include <cmath>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <string_view>
 
 #include <simdjson/ondemand.h>
 #include <simdjson/padded_string_view-inl.h>
 
 #include "order_book.hpp"
+#include "spsc_queue.hpp"
 
 class MarketParser
 {
 public:
-    static constexpr std::size_t kMaxPayloadBytes = 1024;
+    // Real L2 snapshots can be much larger than a single-tick mock payload.
+    // This remains fixed-capacity for predictable performance.
+    static constexpr std::size_t kMaxPayloadBytes = 16384;
 
     MarketParser() noexcept
     {
@@ -24,7 +26,12 @@ public:
         initialized_ = (err == simdjson::SUCCESS);
     }
 
-    [[nodiscard]] bool parse_tick(std::string_view json_payload, MarketTick &out_tick) noexcept
+    // Parse a single L2 message and emit one MarketTick per updated price level.
+    // Expected schema:
+    //   {"bids":[["0.57","1200"],["0.56","300"]],"asks":[["0.59","500"]]}
+    // Prices and sizes are strings to avoid float precision loss.
+    template <std::size_t QueueSize>
+    [[nodiscard]] bool parse_tick(std::string_view json_payload, SpscQueue<MarketTick, QueueSize> &out_queue) noexcept
     {
         if (!initialized_)
         {
@@ -53,131 +60,201 @@ public:
             return false;
         }
 
-        // price
-        std::uint32_t price_cents = 0U;
+        // Snapshot/delta messages contain arrays of [price, size] string pairs.
+        // Emit one tick per updated level.
+        if (!parse_levels(obj, "bids", true, out_queue))
         {
-            simdjson::ondemand::value price_val;
-            if (obj.find_field_unordered("price").get(price_val) != simdjson::SUCCESS)
-            {
-                return false;
-            }
-
-            std::uint64_t price_u64 = 0U;
-            if (price_val.get_uint64().get(price_u64) == simdjson::SUCCESS)
-            {
-                if (price_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint8_t>::max()))
-                {
-                    return false;
-                }
-                price_cents = static_cast<std::uint32_t>(price_u64);
-            }
-            else
-            {
-                double price_d = 0.0;
-                if (price_val.get_double().get(price_d) != simdjson::SUCCESS)
-                {
-                    return false;
-                }
-
-                const double scaled = (price_d <= 1.0) ? (price_d * 100.0) : price_d;
-                const long long rounded = std::llround(scaled);
-                if (rounded < 0LL || rounded > static_cast<long long>(std::numeric_limits<std::uint8_t>::max()))
-                {
-                    return false;
-                }
-                price_cents = static_cast<std::uint32_t>(rounded);
-            }
-
-            if (price_cents < static_cast<std::uint32_t>(LimitOrderBook::kMinPrice) ||
-                price_cents > static_cast<std::uint32_t>(LimitOrderBook::kMaxPrice))
-            {
-                return false;
-            }
+            return false;
+        }
+        if (!parse_levels(obj, "asks", false, out_queue))
+        {
+            return false;
         }
 
-        // size
-        std::uint32_t size = 0U;
-        {
-            simdjson::ondemand::value size_val;
-            if (obj.find_field_unordered("size").get(size_val) != simdjson::SUCCESS)
-            {
-                return false;
-            }
-
-            std::uint64_t size_u64 = 0U;
-            if (size_val.get_uint64().get(size_u64) != simdjson::SUCCESS)
-            {
-                return false;
-            }
-            if (size_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()))
-            {
-                return false;
-            }
-            size = static_cast<std::uint32_t>(size_u64);
-        }
-
-        // side
-        bool is_bid = false;
-        {
-            simdjson::ondemand::value side_val;
-            if (obj.find_field_unordered("side").get(side_val) != simdjson::SUCCESS)
-            {
-                return false;
-            }
-
-            bool side_bool = false;
-            if (side_val.get_bool().get(side_bool) == simdjson::SUCCESS)
-            {
-                is_bid = side_bool;
-            }
-            else
-            {
-                std::string_view side_sv;
-                if (side_val.get_string().get(side_sv) == simdjson::SUCCESS)
-                {
-                    if (side_sv == "bid" || side_sv == "buy")
-                    {
-                        is_bid = true;
-                    }
-                    else if (side_sv == "ask" || side_sv == "sell")
-                    {
-                        is_bid = false;
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }
-                else
-                {
-                    std::uint64_t side_u64 = 0U;
-                    if (side_val.get_uint64().get(side_u64) != simdjson::SUCCESS)
-                    {
-                        return false;
-                    }
-                    if (side_u64 == 0U)
-                    {
-                        is_bid = false;
-                    }
-                    else if (side_u64 == 1U)
-                    {
-                        is_bid = true;
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        out_tick.price = static_cast<std::uint8_t>(price_cents);
-        out_tick.size = size;
-        out_tick.is_bid = is_bid;
         return true;
     }
 
 private:
+    static constexpr bool in_price_range(std::uint32_t cents) noexcept
+    {
+        return cents >= static_cast<std::uint32_t>(LimitOrderBook::kMinPrice) &&
+               cents <= static_cast<std::uint32_t>(LimitOrderBook::kMaxPrice);
+    }
+
+    [[nodiscard]] static bool parse_u32(std::string_view sv, std::uint32_t &out) noexcept
+    {
+        if (sv.empty())
+        {
+            return false;
+        }
+
+        std::uint32_t value = 0U;
+        const char *const begin = sv.data();
+        const char *const end = sv.data() + sv.size();
+        const auto res = std::from_chars(begin, end, value);
+        if (res.ec != std::errc{} || res.ptr != end)
+        {
+            return false;
+        }
+        out = value;
+        return true;
+    }
+
+    // Convert a string price like "0.57" to integer cents (57) without floats.
+    // Also accepts "57" (already-cents) for flexibility.
+    [[nodiscard]] static bool parse_price_cents(std::string_view sv, std::uint32_t &out_cents) noexcept
+    {
+        if (sv.empty())
+        {
+            return false;
+        }
+
+        const std::size_t dot = sv.find('.');
+        if (dot == std::string_view::npos)
+        {
+            std::uint32_t cents = 0U;
+            if (!parse_u32(sv, cents))
+            {
+                return false;
+            }
+            out_cents = cents;
+            return true;
+        }
+
+        const std::string_view int_part = sv.substr(0, dot);
+        const std::string_view frac_part = sv.substr(dot + 1);
+        if (frac_part.empty())
+        {
+            return false;
+        }
+
+        std::uint32_t whole = 0U;
+        if (!int_part.empty())
+        {
+            if (!parse_u32(int_part, whole))
+            {
+                return false;
+            }
+        }
+
+        // Take up to two decimal digits; pad with zeros if needed.
+        auto digit_or_zero = [&](std::size_t idx) -> std::uint32_t
+        {
+            if (idx >= frac_part.size())
+            {
+                return 0U;
+            }
+            const char c = frac_part[idx];
+            if (c < '0' || c > '9')
+            {
+                return 10U; // sentinel invalid
+            }
+            return static_cast<std::uint32_t>(c - '0');
+        };
+
+        const std::uint32_t d0 = digit_or_zero(0);
+        const std::uint32_t d1 = digit_or_zero(1);
+        if (d0 > 9U || d1 > 9U)
+        {
+            return false;
+        }
+
+        for (std::size_t i = 2; i < frac_part.size(); ++i)
+        {
+            const char c = frac_part[i];
+            if (c < '0' || c > '9')
+            {
+                return false;
+            }
+        }
+
+        out_cents = whole * 100U + (d0 * 10U + d1);
+        return true;
+    }
+
+    template <std::size_t QueueSize>
+    [[nodiscard]] bool parse_levels(simdjson::ondemand::object &obj,
+                                    const char *field,
+                                    bool is_bid,
+                                    SpscQueue<MarketTick, QueueSize> &out_queue) noexcept
+    {
+        simdjson::ondemand::value levels_val;
+        const simdjson::error_code find_err = obj.find_field_unordered(field).get(levels_val);
+        if (find_err == simdjson::NO_SUCH_FIELD)
+        {
+            return true; // field is optional
+        }
+        if (find_err != simdjson::SUCCESS)
+        {
+            return false;
+        }
+
+        simdjson::ondemand::array levels;
+        if (levels_val.get_array().get(levels) != simdjson::SUCCESS)
+        {
+            return false;
+        }
+
+        for (simdjson::ondemand::value level_val : levels)
+        {
+            simdjson::ondemand::array pair;
+            if (level_val.get_array().get(pair) != simdjson::SUCCESS)
+            {
+                return false;
+            }
+
+            auto it = pair.begin();
+            if (it == pair.end())
+            {
+                return false;
+            }
+
+            std::string_view price_sv;
+            if ((*it).get_string().get(price_sv) != simdjson::SUCCESS)
+            {
+                // Price must be a JSON string
+                continue;
+            }
+            ++it;
+            if (it == pair.end())
+            {
+                return false;
+            }
+
+            std::string_view size_sv;
+            if ((*it).get_string().get(size_sv) != simdjson::SUCCESS)
+            {
+                continue;
+            }
+            ++it;
+            if (it != pair.end())
+            {
+                // Enforce exactly two elements per level.
+                return false;
+            }
+
+            std::uint32_t price_cents = 0U;
+            if (!parse_price_cents(price_sv, price_cents) || !in_price_range(price_cents))
+            {
+                continue;
+            }
+
+            std::uint32_t size = 0U;
+            if (!parse_u32(size_sv, size))
+            {
+                continue;
+            }
+
+            MarketTick tick{};
+            tick.price = static_cast<std::uint8_t>(price_cents);
+            tick.size = size;
+            tick.is_bid = is_bid;
+            (void)out_queue.push(tick);
+        }
+
+        return true;
+    }
+
     simdjson::ondemand::parser parser_{};
     bool initialized_{false};
 

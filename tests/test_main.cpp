@@ -36,15 +36,25 @@ TEST(SpscQueueTest, EmptyAndFullAndFifo)
 TEST(MarketParserTest, ParsesBidAndAsk)
 {
     MarketParser parser;
-    MarketTick tick{};
 
-    EXPECT_TRUE(parser.parse_tick(R"({"price":0.57,"size":123,"side":"bid"})", tick));
+    SpscQueue<MarketTick, 1024> q;
+    EXPECT_TRUE(parser.parse_tick(
+        R"({"bids":[["0.57","1200"],["0.56","300"]],"asks":[["0.59","500"]]})",
+        q));
+
+    MarketTick tick{};
+    ASSERT_TRUE(q.pop(tick));
     EXPECT_EQ(tick.price, static_cast<std::uint8_t>(57));
-    EXPECT_EQ(tick.size, 123U);
+    EXPECT_EQ(tick.size, 1200U);
     EXPECT_TRUE(tick.is_bid);
 
-    EXPECT_TRUE(parser.parse_tick(R"({"price":57,"size":1,"side":"ask"})", tick));
-    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(57));
-    EXPECT_EQ(tick.size, 1U);
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(56));
+    EXPECT_EQ(tick.size, 300U);
+    EXPECT_TRUE(tick.is_bid);
+
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(59));
+    EXPECT_EQ(tick.size, 500U);
     EXPECT_FALSE(tick.is_bid);
 }
