@@ -150,6 +150,49 @@ Run:
 ./build/engine example.com 443 /ws
 ```
 
+## How to Test (Recommended)
+
+You have two layers of testing:
+
+### 1) Unit tests (fast)
+
+```bash
+cmake --build build -j$(getconf _NPROCESSORS_ONLN)
+ctest --test-dir build -V
+```
+
+### 2) End-to-end local test (no external venue required)
+
+This repo includes a tiny local **mock WSS server** that emits JSON ticks in the exact schema expected by `MarketParser`:
+
+1. Create a repo-local Python venv + install deps (one time):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip websockets
+```
+
+2. Generate a local self-signed cert (one time):
+
+```bash
+bash tools/gen_self_signed_cert.sh
+```
+
+3. Start the mock WSS server:
+
+```bash
+python tools/mock_wss_server.py
+```
+
+4. In another terminal, run the engine against it:
+
+```bash
+./build/engine 127.0.0.1 8765 /
+```
+
+If everything is wired correctly, you should see `mock_exec latency_us=...` prints from the strategy thread.
+
 If your endpoint sends JSON frames matching:
 
 ```json

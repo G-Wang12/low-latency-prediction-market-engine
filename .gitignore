@@ -60,6 +60,22 @@ market_data_dump.*
 *.tmp
 *.temp
 
+# Python tooling (used only for local mock server in tools/)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Generated local TLS material for tools/mock_wss_server.py
+tools/cert.pem
+tools/key.pem
+
 # Do not ignore the build directory entirely if it contains useful presets,
 # but typically we regenerate it.
 !build/CMakePresets.json

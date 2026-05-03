@@ -51,6 +51,29 @@ cmake --build build -j$(getconf _NPROCESSORS_ONLN)
 ctest --test-dir build -V
 ```
 
+### Recommended Environment Setup (Conda + Python tooling)
+
+This repo has two independent “worlds”:
+
+- **C++ build/run** (CMake + Clang/GCC + system/Homebrew libs)
+- **Python tooling** (only used for the local mock websocket server in `tools/`)
+
+To keep the C++ toolchain deterministic on macOS, it’s recommended to **deactivate Conda `base`** in the terminal you use for building/running C++:
+
+```bash
+conda deactivate
+```
+
+For the Python mock server, use a repo-local virtualenv instead of installing packages into Conda `base`:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip websockets
+```
+
+Practical workflow: run the Python server in one terminal (with `(.venv)` active), and build/run the engine in another terminal (with neither `(.venv)` nor `(base)` active).
+
 **Note for macOS users in conda `(base)`**: conda often injects search paths that can cause a mixed Boost install to be detected (e.g., Homebrew BoostConfig + conda `boost_system`). The build defaults to ignoring `CONDA_PREFIX` during dependency discovery; override with:
 
 ```bash
@@ -130,11 +153,11 @@ This repository includes:
 
 ## License
 
-MIT License — see `LICENSE` file (add as needed).
+This project is currently unlicensed (all rights reserved).
 
 ## Contributing
 
-Pull requests welcome. Focus on measurable latency improvements, thread safety, and test coverage.
+Not currently accepting external contributions.
 
 ---
 
