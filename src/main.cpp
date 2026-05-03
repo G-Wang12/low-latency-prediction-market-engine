@@ -10,7 +10,9 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/ssl/context.hpp>
 
+#include "async_logger.hpp"
 #include "order_book.hpp"
+#include "position_manager.hpp"
 #include "spsc_queue.hpp"
 #include "strategy_engine.hpp"
 #include "websocket_client.hpp"
@@ -55,6 +57,9 @@ int main(int argc, char **argv)
     LimitOrderBook book;
     SpscQueue<MarketTick, 1024> tick_queue;
 
+    PositionManager position_manager;
+    AsyncLogger logger; // writes to trading_log.csv by default
+
     boost::asio::io_context ioc;
     boost::asio::ssl::context ssl_ctx(boost::asio::ssl::context::tls_client);
 
@@ -62,7 +67,7 @@ int main(int argc, char **argv)
     // Keep config minimal for now; failures are reported by WebSocketClient.
     ssl_ctx.set_default_verify_paths();
 
-    StrategyEngine strategy(tick_queue, book);
+    StrategyEngine strategy(tick_queue, book, position_manager, logger);
     WebSocketClient ws_client(ioc, ssl_ctx, tick_queue);
 
     // Kick off async resolve/connect/handshakes.

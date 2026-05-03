@@ -67,6 +67,24 @@ public:
         return kNoAsk;
     }
 
+    [[nodiscard]] constexpr std::uint32_t get_bid_size(std::uint8_t price) const noexcept
+    {
+        if (price < kMinPrice || price > kMaxPrice)
+        {
+            return 0U;
+        }
+        return bids_[static_cast<std::size_t>(price)];
+    }
+
+    [[nodiscard]] constexpr std::uint32_t get_ask_size(std::uint8_t price) const noexcept
+    {
+        if (price < kMinPrice || price > kMaxPrice)
+        {
+            return 0U;
+        }
+        return asks_[static_cast<std::size_t>(price)];
+    }
+
 private:
     std::array<std::uint32_t, kLevels> bids_{};
     std::array<std::uint32_t, kLevels> asks_{};

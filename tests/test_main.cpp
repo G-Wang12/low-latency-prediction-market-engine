@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "market_parser.hpp"
+#include "position_manager.hpp"
 #include "spsc_queue.hpp"
 
 // Dummy test to verify test framework is working.
@@ -80,4 +81,42 @@ TEST(LimitOrderBookTest, BestBidAskHandleDeletionAndEmpty)
     EXPECT_EQ(book.get_best_ask(), static_cast<std::uint8_t>(59));
     book.apply_tick(MarketTick{static_cast<std::uint8_t>(59), 0U, false});
     EXPECT_EQ(book.get_best_ask(), LimitOrderBook::kNoAsk);
+}
+
+TEST(PositionManagerTest, LongOpenCloseAndUnrealized)
+{
+    PositionManager pm;
+
+    pm.add_fill(+10, 0.50); // buy 10 @ 0.50
+    EXPECT_EQ(pm.position_size(), 10);
+    EXPECT_DOUBLE_EQ(pm.average_entry_price(), 0.50);
+    EXPECT_DOUBLE_EQ(pm.realized_pnl(), 0.0);
+
+    // Mark-to-market at mid=0.55 => +10 * (0.55 - 0.50) = +0.50
+    EXPECT_DOUBLE_EQ(pm.get_unrealized_pnl(0.55), 0.50);
+
+    // Sell 4 @ 0.60 => realized += 4 * (0.60 - 0.50) = +0.40
+    pm.add_fill(-4, 0.60);
+    EXPECT_EQ(pm.position_size(), 6);
+    EXPECT_DOUBLE_EQ(pm.average_entry_price(), 0.50);
+    EXPECT_DOUBLE_EQ(pm.realized_pnl(), 0.40);
+}
+
+TEST(PositionManagerTest, FlipThroughZeroResetsEntry)
+{
+    PositionManager pm;
+
+    // Start long 5 @ 0.40
+    pm.add_fill(+5, 0.40);
+    EXPECT_EQ(pm.position_size(), 5);
+    EXPECT_DOUBLE_EQ(pm.average_entry_price(), 0.40);
+
+    // Sell 8 @ 0.45: close 5 (+0.25 pnl), then open short 3 @ 0.45
+    pm.add_fill(-8, 0.45);
+    EXPECT_EQ(pm.position_size(), -3);
+    EXPECT_DOUBLE_EQ(pm.realized_pnl(), 5.0 * (0.45 - 0.40));
+    EXPECT_DOUBLE_EQ(pm.average_entry_price(), 0.45);
+
+    // For a short 3 @ 0.45, mid=0.40 => unrealized = -3 * (0.40 - 0.45) = +0.15
+    EXPECT_DOUBLE_EQ(pm.get_unrealized_pnl(0.40), 0.15);
 }

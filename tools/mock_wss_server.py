@@ -28,7 +28,13 @@ async def handler(ws) -> None:
     # Emit alternating bid/ask updates that will occasionally create a tight spread.
     bid = 0.57
     ask = 0.59
-    size = 100
+
+    # Size imbalance is what drives microprice momentum in our toy strategy.
+    # We periodically flip which side has the larger size so microprice jumps
+    # by > 1 cent at the transition, triggering occasional trades.
+    phase_len = 200  # number of messages per phase
+    big = 5000
+    small = 10
     prev_bid = bid
     prev_ask = ask
 
@@ -42,13 +48,22 @@ async def handler(ws) -> None:
     drain_task = asyncio.create_task(drain_incoming())
 
     try:
+        i = 0
         while True:
+            phase = (i // phase_len) % 2
+            if phase == 0:
+                bid_size = big
+                ask_size = small
+            else:
+                bid_size = small
+                ask_size = big
+
             # Clear the previous levels so the book doesn't accumulate depth forever.
             # This keeps best bid/ask consistent with a single-level-per-side toy feed.
             await ws.send(
                 make_l2(
-                    bids=[[fmt_price(prev_bid), "0"], [fmt_price(bid), str(size)]],
-                    asks=[[fmt_price(prev_ask), "0"], [fmt_price(ask), str(size)]],
+                    bids=[[fmt_price(prev_bid), "0"], [fmt_price(bid), str(bid_size)]],
+                    asks=[[fmt_price(prev_ask), "0"], [fmt_price(ask), str(ask_size)]],
                 )
             )
 
@@ -67,8 +82,10 @@ async def handler(ws) -> None:
                 bid = 0.10
                 ask = 0.12
 
+            i += 1
+
             # Slow down a touch so you can read output.
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.001)
     except ConnectionClosed:
         # Normal shutdown: client closed the websocket (e.g. Ctrl+C on engine).
         return

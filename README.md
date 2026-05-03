@@ -74,6 +74,58 @@ python -m pip install -U pip websockets
 
 Practical workflow: run the Python server in one terminal (with `(.venv)` active), and build/run the engine in another terminal (with neither `(.venv)` nor `(base)` active).
 
+### Real-time Dashboard (Streamlit)
+
+The Streamlit dashboard reads a CSV file named `trading_log.csv` (by default) with columns:
+
+`timestamp_us,event_type,price,size,realized_pnl`
+
+1. Install dashboard deps (recommended inside the repo-local `(.venv)`):
+
+```bash
+source .venv/bin/activate
+python -m pip install -U streamlit pandas plotly streamlit-autorefresh
+```
+
+2. Run the dashboard:
+
+```bash
+streamlit run tools/dashboard.py
+```
+
+3. Point it at a different log file (optional):
+
+```bash
+TRADING_LOG_PATH=/path/to/trading_log.csv streamlit run tools/dashboard.py
+```
+
+Note: the dashboard will show a warning until `trading_log.csv` exists and has data.
+
+Optional (quick sanity check): generate a tiny sample log file:
+
+```bash
+python - <<'PY'
+import csv
+import time
+
+rows = [
+  (0, 'P', 0.0, 0, 0.0),
+  (500_000, 'T', 0.59, 10, 0.0),
+  (1_000_000, 'P', 0.0, 0, 0.12),
+  (1_500_000, 'T', 0.57, -10, 0.12),
+  (2_000_000, 'P', 0.0, 0, 0.20),
+]
+
+with open('trading_log.csv', 'w', newline='') as f:
+  w = csv.writer(f)
+  w.writerow(['timestamp_us', 'event_type', 'price', 'size', 'realized_pnl'])
+  base = int(time.time() * 1_000_000)
+  for t, et, price, size, pnl in rows:
+    w.writerow([base + t, et, price, size, pnl])
+print('wrote trading_log.csv')
+PY
+```
+
 **Note for macOS users in conda `(base)`**: conda often injects search paths that can cause a mixed Boost install to be detected (e.g., Homebrew BoostConfig + conda `boost_system`). The build defaults to ignoring `CONDA_PREFIX` during dependency discovery; override with:
 
 ```bash
@@ -92,6 +144,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLPME_IGNORE_CONDA_PREFIX=OFF
 │   └── main.cpp            # Entry point
 ├── tests/
 │   └── test_main.cpp       # GoogleTest suite
+├── tools/
+│   ├── mock_wss_server.py   # Local TLS websocket tick generator
+│   └── dashboard.py         # Streamlit dashboard for trading_log.csv
 ├── .gitignore
 ├── README.md
 └── build/                  # Generated (ignored)

@@ -138,12 +138,57 @@ Responsibilities:
 - `run()` is a `while (running_)` loop
 - busy-waits on `queue.pop(tick)` (no `sleep_for`)
 - when a tick is popped:
-  - record time (`t_pop`)
   - `book.apply_tick(tick)`
-  - compute `spread = best_ask - best_bid`
-  - if `spread <= 2`, record time again and print latency in microseconds
+  - compute best bid/ask and the **microprice** using best-level sizes
+  - generate a simple **microprice momentum** signal and trigger mock fills
+  - update `PositionManager` and emit CSV events via `AsyncLogger`
 
-The `spread <= 2` condition is a **placeholder trigger** to demonstrate decision timing. Replace with real strategy logic later.
+Microprice momentum signal (current placeholder strategy):
+
+- microprice (in cents):
+  - `microprice = (best_bid * best_ask_size + best_ask * best_bid_size) / (best_bid_size + best_ask_size)`
+- if `microprice - prev_microprice > 1.0` (momentum up): BUY 10 at best ask
+- if `prev_microprice - microprice > 1.0` (momentum down): SELL 10 at best bid
+
+Logging/PnL:
+
+- on each trade, log a `'T'` event with the fill price/size and current realized PnL
+- every 1,000 processed ticks, log a `'P'` event with mark-to-market equity PnL (realized + unrealized) using the current mid-price
+
+### Position & PnL Manager (Mock Trading)
+
+- Location: `include/position_manager.hpp`
+- Purpose: track a simulated position and PnL without touching any real exchange execution APIs.
+
+State tracked:
+
+- `position_size` (int): positive = long, negative = short
+- `average_entry_price` (double): current VWAP entry for the open position
+- `realized_pnl` (double): PnL locked in by closing fills
+
+Key methods:
+
+- `add_fill(fill_size, fill_price)`: updates position size, updates VWAP on increases, and computes realized PnL when a fill reduces/offsets an existing position (including flip-through-zero)
+- `get_unrealized_pnl(current_mid_price)`: mark-to-market PnL for the open position if we closed it at the given mid
+
+### Asynchronous Cold-Path Logger
+
+- Location: `include/async_logger.hpp`
+- Purpose: write trades/PnL events to disk without blocking the latency-critical strategy thread.
+
+Design:
+
+- strategy thread calls `AsyncLogger::log_event(...)` which does a lock-free `push()` into a dedicated `SpscQueue<LogEvent, 4096>`
+- a background I/O thread spins on `pop()` and appends formatted CSV rows to `std::ofstream`
+- the file is flushed periodically (every ~1000 events or ~1 second) so external tooling can tail/read it
+
+Output:
+
+- default log file is `trading_log.csv` with columns: `timestamp_us,event_type,price,size,realized_pnl`
+
+Local dashboard:
+
+- see `tools/dashboard.py` for a Streamlit app that polls `trading_log.csv` every second and plots PnL over time (trade events plus periodic mark-to-market updates) with trade price markers
 
 ## Wiring / Threading
 
@@ -222,7 +267,7 @@ python tools/mock_wss_server.py
 ./build/engine 127.0.0.1 8765 /
 ```
 
-If everything is wired correctly, you should see `mock_exec latency_us=...` prints from the strategy thread.
+If everything is wired correctly, you should see `trading_log.csv` growing and the Streamlit dashboard updating.
 
 If your endpoint sends JSON frames matching:
 
@@ -236,11 +281,7 @@ If your endpoint sends JSON frames matching:
 }
 ```
 
-then the strategy thread will eventually print lines like:
-
-```
-mock_exec latency_us=12 spread=2 bid=57 ask=59
-```
+then the strategy thread will eventually generate mock trades and periodic PnL updates (written to `trading_log.csv`).
 
 ## Next Steps (Practical)
 
