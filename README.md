@@ -69,10 +69,30 @@ For the Python mock server, use a repo-local virtualenv instead of installing pa
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip websockets
+python -m pip install -U pip websockets certifi
 ```
 
 Practical workflow: run the Python server in one terminal (with `(.venv)` active), and build/run the engine in another terminal (with neither `(.venv)` nor `(base)` active).
+
+### Recording real Polymarket data (JSONL)
+
+The recorder in `tools/record_polymarket.py` connects to Polymarket’s public Market Channel websocket and appends every incoming JSON message to `historical_data.jsonl`.
+
+1. Ensure the repo-local venv has `websockets` installed:
+
+```bash
+source .venv/bin/activate
+python -m pip install -U pip websockets certifi
+```
+
+2. Edit `ASSET_IDS` in `tools/record_polymarket.py` (these are Polymarket _asset IDs / token IDs_).
+
+3. Run the recorder:
+
+```bash
+source .venv/bin/activate
+python tools/record_polymarket.py
+```
 
 ### Real-time Dashboard (Streamlit)
 

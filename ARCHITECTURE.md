@@ -190,6 +190,18 @@ Local dashboard:
 
 - see `tools/dashboard.py` for a Streamlit app that polls `trading_log.csv` every second and plots PnL over time (trade events plus periodic mark-to-market updates) with trade price markers
 
+## Real Live Data Recording (Real Venue Capture)
+
+- Location: `tools/record_polymarket.py`
+- Purpose: record Polymarket's _live_ market data websocket messages to `historical_data.jsonl` so you can replay them later.
+
+Recorder behavior:
+
+- connects to Polymarket Market Channel: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+- subscribes using `assets_ids` (token IDs), not a "market_id" (see Polymarket docs)
+- appends each incoming JSON message as one JSONL line with an extra `local_timestamp_ns` field (machine receipt time)
+- auto-reconnects on disconnects with exponential backoff
+
 ## Wiring / Threading
 
 - Location: `src/main.cpp`
