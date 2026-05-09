@@ -14,7 +14,7 @@
 
 WebSocketClient::WebSocketClient(boost::asio::io_context &ioc,
                                  boost::asio::ssl::context &ssl_ctx,
-                                 SpscQueue<MarketTick, 1024> &out_queue) noexcept
+                                 SpscQueue<MarketTick, engine_config::kTickQueueSize> &out_queue) noexcept
     : resolver_(boost::asio::make_strand(ioc)),
       ws_(boost::asio::make_strand(ioc), ssl_ctx),
       queue_(out_queue)

@@ -11,6 +11,7 @@
 #include <boost/asio/ssl/context.hpp>
 
 #include "async_logger.hpp"
+#include "engine_config.hpp"
 #include "order_book.hpp"
 #include "position_manager.hpp"
 #include "spsc_queue.hpp"
@@ -55,7 +56,7 @@ int main(int argc, char **argv)
     std::signal(SIGTERM, on_signal);
 
     LimitOrderBook book;
-    SpscQueue<MarketTick, 1024> tick_queue;
+    SpscQueue<MarketTick, engine_config::kTickQueueSize> tick_queue;
 
     PositionManager position_manager;
     AsyncLogger logger; // writes to trading_log.csv by default

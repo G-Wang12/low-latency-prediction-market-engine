@@ -56,7 +56,7 @@ ctest --test-dir build -V
 This repo has two independent “worlds”:
 
 - **C++ build/run** (CMake + Clang/GCC + system/Homebrew libs)
-- **Python tooling** (only used for the local mock websocket server in `tools/`)
+- **Python tooling** (used for local websocket tooling in `tools/`: recorder, replay server, mock server, dashboard)
 
 To keep the C++ toolchain deterministic on macOS, it’s recommended to **deactivate Conda `base`** in the terminal you use for building/running C++:
 
@@ -93,6 +93,48 @@ python -m pip install -U pip websockets certifi
 source .venv/bin/activate
 python tools/record_polymarket.py
 ```
+
+### Replaying recorded Polymarket data (local TLS websocket)
+
+The replay server in `tools/replay_server.py` serves `historical_data.jsonl` over a local TLS websocket and replays messages in order.
+
+It prefers replaying the original on-the-wire websocket payload when available (`raw_message` / `raw` fields), and uses `local_timestamp_ns` to reproduce short-term burstiness.
+
+1. Ensure the repo-local venv has dependencies installed:
+
+```bash
+source .venv/bin/activate
+python -m pip install -U pip websockets
+```
+
+2. Ensure you have a local TLS cert/key for the server:
+
+```bash
+./tools/gen_self_signed_cert.sh
+```
+
+This generates `tools/cert.pem` and `tools/key.pem` (used by the replay server).
+
+3. Run the replay server:
+
+```bash
+source .venv/bin/activate
+python tools/replay_server.py
+```
+
+Optional: cap inter-message sleep time to avoid multi-minute gaps if your JSONL contains time discontinuities (default is `0.5` seconds):
+
+```bash
+REPLAY_MAX_SLEEP_S=0.1 python tools/replay_server.py
+```
+
+4. Point the engine at the replay server:
+
+```bash
+./build/engine 127.0.0.1 8765 /
+```
+
+At this point `trading_log.csv` should start accumulating rows, and the Streamlit dashboard should stop showing the “headers only” warning.
 
 ### Real-time Dashboard (Streamlit)
 
@@ -166,6 +208,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLPME_IGNORE_CONDA_PREFIX=OFF
 │   └── test_main.cpp       # GoogleTest suite
 ├── tools/
 │   ├── mock_wss_server.py   # Local TLS websocket tick generator
+│   ├── record_polymarket.py  # Record Polymarket Market Channel JSONL
+│   ├── replay_server.py      # Replay historical_data.jsonl over local WSS
 │   └── dashboard.py         # Streamlit dashboard for trading_log.csv
 ├── .gitignore
 ├── README.md

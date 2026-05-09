@@ -15,6 +15,7 @@
 #include <boost/beast/websocket/stream.hpp>
 
 #include "market_parser.hpp"
+#include "engine_config.hpp"
 #include "spsc_queue.hpp"
 
 class WebSocketClient
@@ -25,7 +26,7 @@ public:
 
     WebSocketClient(boost::asio::io_context &ioc,
                     boost::asio::ssl::context &ssl_ctx,
-                    SpscQueue<MarketTick, 1024> &out_queue) noexcept;
+                    SpscQueue<MarketTick, engine_config::kTickQueueSize> &out_queue) noexcept;
 
     WebSocketClient(const WebSocketClient &) = delete;
     WebSocketClient &operator=(const WebSocketClient &) = delete;
@@ -53,7 +54,7 @@ private:
 
     boost::beast::flat_static_buffer<WebSocketClient::kReadBufferBytes> read_buffer_;
 
-    SpscQueue<MarketTick, 1024> &queue_;
+    SpscQueue<MarketTick, engine_config::kTickQueueSize> &queue_;
     MarketParser parser_{};
 
     std::string host_;

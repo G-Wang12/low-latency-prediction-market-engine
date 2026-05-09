@@ -13,13 +13,15 @@ struct MarketTick
 class LimitOrderBook
 {
 public:
-    static constexpr std::uint8_t kMinPrice = 1;
-    static constexpr std::uint8_t kMaxPrice = 99;
-    static constexpr std::size_t kLevels = 100; // index 0 unused
+    // Binary prediction market prices naturally live in [0, 1] => [0, 100] cents.
+    static constexpr std::uint8_t kMinPrice = 0;
+    static constexpr std::uint8_t kMaxPrice = 100;
+    static constexpr std::size_t kLevels = 101;
 
     // Sentinel values for empty sides.
-    static constexpr std::uint8_t kNoBid = 0;
-    static constexpr std::uint8_t kNoAsk = 100;
+    // Use a value outside the valid [0, 100] range.
+    static constexpr std::uint8_t kNoBid = 255;
+    static constexpr std::uint8_t kNoAsk = 255;
 
     constexpr LimitOrderBook() noexcept = default;
 

@@ -60,6 +60,69 @@ TEST(MarketParserTest, ParsesBidAndAsk)
     EXPECT_FALSE(tick.is_bid);
 }
 
+TEST(MarketParserTest, ParsesPolymarketBook)
+{
+    MarketParser parser;
+
+    SpscQueue<MarketTick, 1024> q;
+    EXPECT_TRUE(parser.parse_tick(
+        R"({"event_type":"book","asset_id":"abc","market":"0x0","bids":[{"price":".48","size":"30"},{"price":"0.49","size":"20"}],"asks":[{"price":".52","size":"25"}],"timestamp":"123","hash":"0xabc"})",
+        q));
+
+    MarketTick tick{};
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(48));
+    EXPECT_EQ(tick.size, 30U);
+    EXPECT_TRUE(tick.is_bid);
+
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(49));
+    EXPECT_EQ(tick.size, 20U);
+    EXPECT_TRUE(tick.is_bid);
+
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(52));
+    EXPECT_EQ(tick.size, 25U);
+    EXPECT_FALSE(tick.is_bid);
+}
+
+TEST(MarketParserTest, ParsesPolymarketPriceChange)
+{
+    MarketParser parser;
+
+    SpscQueue<MarketTick, 1024> q;
+    EXPECT_TRUE(parser.parse_tick(
+        R"({"event_type":"price_change","market":"0x0","price_changes":[{"asset_id":"abc","price":"0.50","size":"200","side":"BUY","hash":"h"},{"asset_id":"abc","price":"0.52","size":"0","side":"SELL","hash":"h2"}],"timestamp":"123"})",
+        q));
+
+    MarketTick tick{};
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(50));
+    EXPECT_EQ(tick.size, 200U);
+    EXPECT_TRUE(tick.is_bid);
+
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(52));
+    EXPECT_EQ(tick.size, 0U);
+    EXPECT_FALSE(tick.is_bid);
+}
+
+TEST(MarketParserTest, ParsesPolymarketArrayBatch)
+{
+    MarketParser parser;
+
+    SpscQueue<MarketTick, 1024> q;
+    EXPECT_TRUE(parser.parse_tick(
+        R"([{"event_type":"price_change","market":"0x0","price_changes":[{"asset_id":"abc","price":"0.50","size":"200","side":"BUY","hash":"h"}],"timestamp":"123"}])",
+        q));
+
+    MarketTick tick{};
+    ASSERT_TRUE(q.pop(tick));
+    EXPECT_EQ(tick.price, static_cast<std::uint8_t>(50));
+    EXPECT_EQ(tick.size, 200U);
+    EXPECT_TRUE(tick.is_bid);
+}
+
 TEST(LimitOrderBookTest, BestBidAskHandleDeletionAndEmpty)
 {
     LimitOrderBook book;
