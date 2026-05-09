@@ -22,7 +22,8 @@ Two threads, one unidirectional pipeline:
    - Busy-wait (spin) on the queue.
    - Pop ticks, timestamp, update the order book.
    - Compute best bid/ask spread.
-   - If spread is tight, trigger a mock "execution" and print tick→decision latency in microseconds.
+
+- Generate a mock "execution" decision and log events to `trading_log.csv` (via `AsyncLogger`).
 
 ## Components
 
@@ -30,19 +31,19 @@ Two threads, one unidirectional pipeline:
 
 - Location: `include/order_book.hpp`
 - `MarketTick` is the internal normalized market-data unit:
-  - `price`: integer cents (1..99)
-  - `size`: resting size at that price level
+  - `price`: integer cents (0..100)
+  - `size`: resting size at that price level (0 means delete)
   - `is_bid`: bid vs ask
 
 - `LimitOrderBook` stores **price-level sizes** (not individual orders):
-  - `std::array<uint32_t, 100> bids_` and `asks_`
-  - Index is `price` (1..99); slot 0 is unused
+  - `std::array<uint32_t, 101> bids_` and `asks_`
+  - Index is `price` (0..100); all slots are valid
 
 Operations:
 
 - `apply_tick(tick)`: O(1) update `bids_[price] = size` or `asks_[price] = size`
-- `get_best_bid()`: scan 99→1 and return the highest level with `size > 0` (returns `0` when the bid side is empty)
-- `get_best_ask()`: scan 1→99 and return the lowest level with `size > 0` (returns `100` when the ask side is empty)
+- `get_best_bid()`: scan 100→0 and return the highest level with `size > 0` (returns `kNoBid == 255` when empty)
+- `get_best_ask()`: scan 0→100 and return the lowest level with `size > 0` (returns `kNoAsk == 255` when empty)
 
 Deletion semantics (L2 feeds):
 
@@ -79,11 +80,12 @@ Constraints implemented:
 - holds a pre-allocated `simdjson::ondemand::parser` as a member
 - uses a fixed padded buffer (`std::array<char, ...>`) for parsing
 - `parse_tick(std::string_view payload, queue)` returns `true/false` (no exceptions)
-- expects an L2-style schema with nested arrays and **string** numeric fields:
-  - `"bids": [["0.57", "1200"], ...]`
-  - `"asks": [["0.59", "500"], ...]`
-- iterates `bids` and `asks` and **enqueues one `MarketTick` per updated price level** (snapshot or delta)
-- converts string price → integer cents (no floats) and string size → integer using `std::from_chars` (no `std::string` allocations)
+- emits **one `MarketTick` per updated price level** (snapshot or delta)
+- supports multiple inbound schemas (all numeric values are treated as strings):
+  - internal mock feed: `{"bids":[["0.57","1200"],...],"asks":[["0.59","500"]]}`
+  - Polymarket Market Channel snapshots: `{"event_type":"book","bids":[{"price":".48","size":"30"},...],"asks":[...]}`
+  - Polymarket Market Channel deltas: `{"event_type":"price_change","price_changes":[{"price":"0.5","size":"200","side":"BUY"},...]}`
+- accepts either a single message object or a **top-level JSON array** of message objects (batched messages like `[{...},{...}]`)
 
 Snapshot vs deltas (typical L2 feed behavior):
 
@@ -91,6 +93,8 @@ Snapshot vs deltas (typical L2 feed behavior):
 - After that, they send **deltas** (small updates) whenever a level changes
 
 Note: real venue payload schemas will likely differ. If your feed doesn’t match this schema, updates will be dropped.
+
+Important architectural note: the parser normalizes “feed-shaped” messages into a single internal representation (`MarketTick`). This keeps downstream code (queue → book → strategy) feed-agnostic.
 
 ### WebSocket Client
 
@@ -102,7 +106,7 @@ Responsibilities:
 - async resolve → TCP connect → TLS handshake → websocket handshake
 - after websocket handshake, send a **subscription** message via `async_write()`
 - continuous `async_read()` loop
-- read payload into a fixed-capacity Beast `flat_static_buffer<16384>`
+- read payload into a fixed-capacity Beast `flat_static_buffer<kReadBufferBytes>` (currently 16 KiB)
 - parse using `MarketParser`; on success, enqueue one `MarketTick` per updated level
 - log errors to `std::cerr` (no exception throwing in hot path)
 
@@ -200,7 +204,19 @@ Recorder behavior:
 - connects to Polymarket Market Channel: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
 - subscribes using `assets_ids` (token IDs), not a "market_id" (see Polymarket docs)
 - appends each incoming JSON message as one JSONL line with an extra `local_timestamp_ns` field (machine receipt time)
+- preserves the original websocket payload so a replay can reproduce the on-the-wire format (e.g., under `raw` / `raw_message`)
 - auto-reconnects on disconnects with exponential backoff
+
+## Offline Replay (Historical Data)
+
+- Location: `tools/replay_server.py`
+- Purpose: serve a local `wss://127.0.0.1:8765/` websocket that replays `historical_data.jsonl` back into the C++ engine.
+
+Design constraints:
+
+- Preserve “burstiness” by using recorded `local_timestamp_ns` deltas.
+- Avoid pathological stalls if the recording contains timestamp discontinuities (e.g., mixed sessions/markets in one file) by capping maximum inter-message sleep.
+- Replay the original websocket payload when possible so the C++ client sees the same JSON shape as it would live.
 
 ## Wiring / Threading
 
@@ -208,7 +224,7 @@ Recorder behavior:
 
 What happens on startup:
 
-- create shared objects: `LimitOrderBook`, `SpscQueue<MarketTick,1024>`, `io_context`, `ssl::context`
+- create shared objects: `LimitOrderBook`, `SpscQueue<MarketTick, engine_config::kTickQueueSize>`, `io_context`, `ssl::context`
 - create `StrategyEngine` (consumer) and `WebSocketClient` (producer)
 - start network thread: `io_context.run()`
 - start strategy thread: `StrategyEngine::run()`
@@ -221,83 +237,13 @@ Linux-only (optional): pin threads to specific CPU cores under `#ifdef __linux__
 - main thread stops strategy loop and requests websocket close (best-effort), then stops the `io_context`.
 - both threads are joined.
 
-## How to Run
+## Operational docs
 
-Build:
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(getconf _NPROCESSORS_ONLN)
-```
-
-Run:
-
-```bash
-./build/engine <host> <port> <target>
-# Example:
-./build/engine example.com 443 /ws
-```
-
-## How to Test (Recommended)
-
-You have two layers of testing:
-
-### 1) Unit tests (fast)
-
-```bash
-cmake --build build -j$(getconf _NPROCESSORS_ONLN)
-ctest --test-dir build -V
-```
-
-### 2) End-to-end local test (no external venue required)
-
-This repo includes a tiny local **mock WSS server** that emits JSON ticks in the exact schema expected by `MarketParser`:
-
-1. Create a repo-local Python venv + install deps (one time):
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip websockets
-```
-
-2. Generate a local self-signed cert (one time):
-
-```bash
-bash tools/gen_self_signed_cert.sh
-```
-
-3. Start the mock WSS server:
-
-```bash
-python tools/mock_wss_server.py
-```
-
-4. In another terminal, run the engine against it:
-
-```bash
-./build/engine 127.0.0.1 8765 /
-```
-
-If everything is wired correctly, you should see `trading_log.csv` growing and the Streamlit dashboard updating.
-
-If your endpoint sends JSON frames matching:
-
-```json
-{
-  "bids": [
-    ["0.57", "1200"],
-    ["0.56", "300"]
-  ],
-  "asks": [["0.59", "500"]]
-}
-```
-
-then the strategy thread will eventually generate mock trades and periodic PnL updates (written to `trading_log.csv`).
+This document describes architecture and invariants. For exact commands and local workflows (build/run/tests, recorder, replay server, Streamlit dashboard), see `README.md`.
 
 ## Next Steps (Practical)
 
-1. Add venue-specific subscribe/auth write after websocket handshake.
-2. Replace the placeholder L2 schema with Polymarket’s real snapshot/delta schema (field names, market identifiers, sequencing).
-3. Add reconnection, ping/pong, and proper TLS verification policies.
+1. Add venue-specific subscribe/auth for real execution adapters.
+2. Add per-asset routing (separate books) and message sequencing/consistency checks.
+3. Add reconnection, ping/pong, and explicit TLS verification policies.
 4. Add order management + risk checks, and replace mock execution with real order sends.
