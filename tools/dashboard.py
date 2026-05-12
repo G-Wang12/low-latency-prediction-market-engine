@@ -20,6 +20,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("Auto-refresh", value=True)
     st.caption("Tip: disable auto-refresh to stop scroll jumping.")
 
+    active_strategy = "unknown"
+
 if auto_refresh:
     st_autorefresh(interval=REFRESH_MS, key="trading_log_refresh")
 
@@ -43,12 +45,28 @@ if missing:
     st.error(f"CSV is missing required columns: {sorted(missing)}")
     st.stop()
 
+# Strategy metadata (optional). We log a one-time metadata event with event_type == 'M'
+# and a 'strategy' column value.
+if "strategy" in df.columns:
+    meta = df[df["event_type"].astype(str).str.slice(0, 1) == "M"].copy()
+    if not meta.empty:
+        # Use the last non-empty strategy name (supports future strategy switches).
+        s = meta["strategy"].astype(str).replace("", pd.NA).dropna()
+        if not s.empty:
+            active_strategy = str(s.iloc[-1])
+
+with st.sidebar:
+    st.metric("Active Strategy", active_strategy)
+
 # Coerce to expected dtypes (robust to partial writes)
 df["timestamp_us"] = pd.to_numeric(df["timestamp_us"], errors="coerce")
 df["price"] = pd.to_numeric(df["price"], errors="coerce")
 df["size"] = pd.to_numeric(df["size"], errors="coerce")
 df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce")
 df["event_type"] = df["event_type"].astype(str).str.slice(0, 1)
+
+# Drop metadata rows from plots.
+df = df[df["event_type"].isin(["T", "P"])].copy()
 
 # Drop obviously broken rows (e.g., mid-write)
 df = df.dropna(subset=["timestamp_us", "realized_pnl"]).copy()

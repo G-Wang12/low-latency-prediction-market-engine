@@ -12,6 +12,8 @@ A high-performance C++20 execution engine designed for low-latency prediction ma
 - **Networking & Concurrency**: Boost.System + Boost.Thread (extendable to Boost.Asio)
 - **Testing**: GoogleTest integration with CMake FetchContent
 - **Build System**: Modern CMake 3.20+ with FetchContent for dependencies
+- **Modular Signals (Alphas)**: Strategy runs one or more pluggable alpha signals and combines their confidence scores
+- **Latency Visibility**: CSV logs include per-tick processing latency (`latency_us`) so you can quantify signal overhead
 
 ## Quick Start
 
@@ -46,6 +48,11 @@ cmake --build build -j$(getconf _NPROCESSORS_ONLN)
 
 # Run the engine
 ./build/engine
+
+# Select which strategy signals (alphas) to run (default is both)
+./build/engine --strategy momentum
+./build/engine --strategy ofi
+./build/engine --strategy both
 
 # Run tests
 ctest --test-dir build -V
@@ -131,16 +138,29 @@ REPLAY_MAX_SLEEP_S=0.1 python tools/replay_server.py
 4. Point the engine at the replay server:
 
 ```bash
-./build/engine 127.0.0.1 8765 /
+./build/engine --strategy both 127.0.0.1 8765 /
 ```
 
 At this point `trading_log.csv` should start accumulating rows, and the Streamlit dashboard should stop showing the “headers only” warning.
 
 ### Real-time Dashboard (Streamlit)
 
-The Streamlit dashboard reads a CSV file named `trading_log.csv` (by default) with columns:
+The Streamlit dashboard reads a CSV file named `trading_log.csv` (by default).
+
+Required columns (used for plots/metrics):
 
 `timestamp_us,event_type,price,size,realized_pnl`
+
+Additional columns written by the engine:
+
+- `latency_us`: tick-to-log processing latency in microseconds (captures alpha + decision overhead)
+- `strategy`: strategy name for metadata rows
+
+Event types:
+
+- `T`: trade event
+- `P`: periodic mark-to-market point
+- `M`: metadata (e.g., active strategy name)
 
 1. Install dashboard deps (recommended inside the repo-local `(.venv)`):
 
@@ -162,6 +182,8 @@ TRADING_LOG_PATH=/path/to/trading_log.csv streamlit run tools/dashboard.py
 ```
 
 Note: the dashboard will show a warning until `trading_log.csv` exists and has data.
+
+The sidebar also shows the **Active Strategy** (parsed from metadata rows written at engine startup).
 
 Optional (quick sanity check): generate a tiny sample log file:
 

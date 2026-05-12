@@ -143,11 +143,34 @@ Responsibilities:
 - busy-waits on `queue.pop(tick)` (no `sleep_for`)
 - when a tick is popped:
   - `book.apply_tick(tick)`
-  - compute best bid/ask and the **microprice** using best-level sizes
-  - generate a simple **microprice momentum** signal and trigger mock fills
+  - update one or more modular **alpha signals** (see below)
+  - combine alpha confidence scores into a single decision
   - update `PositionManager` and emit CSV events via `AsyncLogger`
 
-Microprice momentum signal (current placeholder strategy):
+Alpha signal interface:
+
+- Location: `include/alpha_base.hpp`
+- `IAlphaSignal::update(const LimitOrderBook& book, const MarketTick& tick) -> double`
+- Returns a confidence score in `[-1.0, 1.0]` where positive means buy-leaning and negative means sell-leaning.
+
+Current alphas:
+
+- `MomentumAlpha` (`include/momentum_alpha.hpp`): implements the previous microprice-momentum logic
+- `OFIAlpha` (`include/ofi_alpha.hpp`): top-of-book order-flow imbalance + book pressure
+
+Combination / execution:
+
+- StrategyEngine holds `std::vector<std::unique_ptr<IAlphaSignal>>`
+- On each tick, it calls `update()` on each alpha and averages the scores
+- If the combined score magnitude exceeds a threshold, it triggers a mock trade at best bid/ask
+
+Strategy selection (cold path):
+
+- Startup flag: `--strategy {momentum|ofi|both}` (default: `both`)
+- Parsed in `src/main.cpp` and passed into the `StrategyEngine` constructor
+- Only affects which alphas are constructed; the hot loop simply iterates over `signals_`
+
+Microprice momentum signal (implemented by `MomentumAlpha`):
 
 - microprice (in cents):
   - `microprice = (best_bid * best_ask_size + best_ask * best_bid_size) / (best_bid_size + best_ask_size)`
@@ -188,11 +211,19 @@ Design:
 
 Output:
 
-- default log file is `trading_log.csv` with columns: `timestamp_us,event_type,price,size,realized_pnl`
+- default log file is `trading_log.csv` with columns:
+  - `timestamp_us,event_type,price,size,realized_pnl,latency_us,strategy`
+
+Notes:
+
+- `latency_us` is the per-tick processing latency in microseconds (used to quantify alpha overhead).
+- `strategy` is populated for metadata rows.
+- A one-time metadata row (`event_type == 'M'`) is written at startup to record which strategy selection is active.
 
 Local dashboard:
 
 - see `tools/dashboard.py` for a Streamlit app that polls `trading_log.csv` every second and plots PnL over time (trade events plus periodic mark-to-market updates) with trade price markers
+- the sidebar shows the "Active Strategy" parsed from metadata rows
 
 ## Real Live Data Recording (Real Venue Capture)
 

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <string_view>
 #include <string>
 #include <thread>
 #include <utility>
@@ -17,6 +19,8 @@ struct LogEvent
     double price;
     int size;
     double realized_pnl;
+    std::uint64_t latency_us;
+    std::array<char, 16> strategy;
 };
 
 class AsyncLogger
@@ -49,7 +53,8 @@ public:
                                  char event_type,
                                  double price,
                                  int size,
-                                 double realized_pnl) noexcept
+                                 double realized_pnl,
+                                 std::uint64_t latency_us = 0U) noexcept
     {
         LogEvent ev{};
         ev.timestamp_us = timestamp_us;
@@ -57,6 +62,32 @@ public:
         ev.price = price;
         ev.size = size;
         ev.realized_pnl = realized_pnl;
+        ev.latency_us = latency_us;
+        ev.strategy[0] = '\0';
+        return queue_.push(ev);
+    }
+
+    // Cold-path metadata event: records which strategy selection is active.
+    // This avoids adding strings to the hot path.
+    [[nodiscard]] bool log_active_strategy(std::string_view strategy_name) noexcept
+    {
+        LogEvent ev{};
+        ev.timestamp_us = 0U;
+        ev.event_type = 'M';
+        ev.price = 0.0;
+        ev.size = 0;
+        ev.realized_pnl = 0.0;
+        ev.latency_us = 0U;
+
+        ev.strategy.fill('\0');
+        const std::size_t n = (strategy_name.size() < (ev.strategy.size() - 1U))
+                                  ? strategy_name.size()
+                                  : (ev.strategy.size() - 1U);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            ev.strategy[i] = strategy_name[i];
+        }
+        ev.strategy[n] = '\0';
         return queue_.push(ev);
     }
 
@@ -71,7 +102,7 @@ private:
             return;
         }
 
-        out << "timestamp_us,event_type,price,size,realized_pnl\n";
+        out << "timestamp_us,event_type,price,size,realized_pnl,latency_us,strategy\n";
 
         std::uint64_t events_since_flush = 0U;
         auto last_flush = std::chrono::steady_clock::now();
@@ -90,7 +121,9 @@ private:
                 << ev.event_type << ','
                 << ev.price << ','
                 << ev.size << ','
-                << ev.realized_pnl << '\n';
+                << ev.realized_pnl << ','
+                << ev.latency_us << ','
+                << ev.strategy.data() << '\n';
 
             ++events_since_flush;
             maybe_flush(out, events_since_flush, last_flush);
@@ -103,7 +136,9 @@ private:
                 << ev.event_type << ','
                 << ev.price << ','
                 << ev.size << ','
-                << ev.realized_pnl << '\n';
+                << ev.realized_pnl << ','
+                << ev.latency_us << ','
+                << ev.strategy.data() << '\n';
         }
 
         out.flush();

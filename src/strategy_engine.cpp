@@ -3,6 +3,9 @@
 #include <chrono>
 #include <cstdint>
 
+#include "momentum_alpha.hpp"
+#include "ofi_alpha.hpp"
+
 namespace
 {
     [[nodiscard]] std::uint64_t now_us() noexcept
@@ -21,10 +24,29 @@ namespace
 StrategyEngine::StrategyEngine(SpscQueue<MarketTick, engine_config::kTickQueueSize> &queue,
                                LimitOrderBook &book,
                                PositionManager &position_manager,
-                               AsyncLogger &logger) noexcept
+                               AsyncLogger &logger,
+                               StrategySelection selection)
     : queue_(queue),
       book_(book), position_manager_(position_manager), logger_(logger)
 {
+    // Construct signals once (outside the hot path). No allocations in run().
+    switch (selection)
+    {
+    case StrategySelection::momentum:
+        signals_.reserve(1);
+        signals_.push_back(std::make_unique<MomentumAlpha>());
+        break;
+    case StrategySelection::ofi:
+        signals_.reserve(1);
+        signals_.push_back(std::make_unique<OFIAlpha>());
+        break;
+    case StrategySelection::both:
+    default:
+        signals_.reserve(2);
+        signals_.push_back(std::make_unique<MomentumAlpha>());
+        signals_.push_back(std::make_unique<OFIAlpha>());
+        break;
+    }
 }
 
 void StrategyEngine::stop() noexcept
@@ -35,9 +57,6 @@ void StrategyEngine::stop() noexcept
 void StrategyEngine::run()
 {
     MarketTick tick{};
-
-    bool has_prev_microprice = false;
-    double prev_microprice_cents = 0.0;
     std::uint64_t ticks_processed = 0U;
 
     while (running_.load(std::memory_order_relaxed))
@@ -47,6 +66,8 @@ void StrategyEngine::run()
             // Busy-wait (spin) to minimize wake-up latency.
             continue;
         }
+
+        const std::uint64_t tick_start_us = now_us();
 
         ++ticks_processed;
 
@@ -68,51 +89,46 @@ void StrategyEngine::run()
             continue;
         }
 
-        const double microprice_cents =
-            (static_cast<double>(best_bid) * static_cast<double>(best_ask_size) +
-             static_cast<double>(best_ask) * static_cast<double>(best_bid_size)) /
-            static_cast<double>(denom);
-
-        // First time we can compute a microprice, emit a mark-to-market update
-        // immediately so the dashboard has data without waiting for 1000 ticks.
-        if (!has_prev_microprice)
+        if (!emitted_initial_p_)
         {
             const double mid_price = (cents_to_price(best_bid) + cents_to_price(best_ask)) * 0.5;
             const double equity_pnl = position_manager_.realized_pnl() +
                                       position_manager_.get_unrealized_pnl(mid_price);
-            (void)logger_.log_event(now_us(), 'P', mid_price, position_manager_.position_size(), equity_pnl);
-
-            prev_microprice_cents = microprice_cents;
-            has_prev_microprice = true;
-            continue;
+            const std::uint64_t latency_us = now_us() - tick_start_us;
+            (void)logger_.log_event(now_us(), 'P', mid_price, position_manager_.position_size(), equity_pnl, latency_us);
+            emitted_initial_p_ = true;
         }
 
-        const double up = microprice_cents - prev_microprice_cents;
-        const double down = prev_microprice_cents - microprice_cents;
+        // Update all alpha signals and average their confidence scores.
+        double score_sum = 0.0;
+        const std::size_t n = signals_.size();
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            score_sum += signals_[i]->update(book_, tick);
+        }
+        const double combined_score = (n == 0U) ? 0.0 : (score_sum / static_cast<double>(n));
 
         int fill_size = 0;
         double fill_price = 0.0;
-        if (up > 1.0)
+        if (combined_score >= kTradeThreshold)
         {
-            // Momentum up -> buy at best ask.
-            fill_size = 10;
+            // Strong positive confidence -> buy at best ask.
+            fill_size = kDefaultTradeSize;
             fill_price = cents_to_price(best_ask);
         }
-        else if (down > 1.0)
+        else if (combined_score <= -kTradeThreshold)
         {
-            // Momentum down -> sell at best bid.
-            fill_size = -10;
+            // Strong negative confidence -> sell at best bid.
+            fill_size = -kDefaultTradeSize;
             fill_price = cents_to_price(best_bid);
         }
 
         if (fill_size != 0)
         {
             position_manager_.add_fill(fill_size, fill_price);
-            (void)logger_.log_event(now_us(), 'T', fill_price, fill_size, position_manager_.realized_pnl());
+            const std::uint64_t latency_us = now_us() - tick_start_us;
+            (void)logger_.log_event(now_us(), 'T', fill_price, fill_size, position_manager_.realized_pnl(), latency_us);
         }
-
-        prev_microprice_cents = microprice_cents;
-        has_prev_microprice = true;
 
         // Periodic mark-to-market update so the dashboard has a smooth curve.
         if ((ticks_processed % 1000U) == 0U)
@@ -120,7 +136,8 @@ void StrategyEngine::run()
             const double mid_price = (cents_to_price(best_bid) + cents_to_price(best_ask)) * 0.5;
             const double equity_pnl = position_manager_.realized_pnl() +
                                       position_manager_.get_unrealized_pnl(mid_price);
-            (void)logger_.log_event(now_us(), 'P', mid_price, position_manager_.position_size(), equity_pnl);
+            const std::uint64_t latency_us = now_us() - tick_start_us;
+            (void)logger_.log_event(now_us(), 'P', mid_price, position_manager_.position_size(), equity_pnl, latency_us);
         }
     }
 }

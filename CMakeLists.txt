@@ -36,6 +36,12 @@ function(llpme_target_strict_warnings target)
         target_compile_options(${target} PRIVATE /W4 /WX)
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        # Newer AppleClang/Clang can emit warnings from third-party headers that become build
+        # breaks under -Werror (e.g. simdjson's deprecated literal-operator form).
+        # Keep -Werror for our code, but don't hard-fail on these external-header diagnostics.
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${target} PRIVATE -Wno-error=deprecated-literal-operator)
+        endif()
     endif()
 endfunction()
 
