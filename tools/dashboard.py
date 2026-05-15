@@ -45,6 +45,8 @@ if missing:
     st.error(f"CSV is missing required columns: {sorted(missing)}")
     st.stop()
 
+has_latency = "latency_us" in df.columns
+
 # Strategy metadata (optional). We log a one-time metadata event with event_type == 'M'
 # and a 'strategy' column value.
 if "strategy" in df.columns:
@@ -63,6 +65,8 @@ df["timestamp_us"] = pd.to_numeric(df["timestamp_us"], errors="coerce")
 df["price"] = pd.to_numeric(df["price"], errors="coerce")
 df["size"] = pd.to_numeric(df["size"], errors="coerce")
 df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce")
+if has_latency:
+    df["latency_us"] = pd.to_numeric(df["latency_us"], errors="coerce")
 df["event_type"] = df["event_type"].astype(str).str.slice(0, 1)
 
 # Drop metadata rows from plots.
@@ -170,3 +174,44 @@ else:
         margin=dict(l=40, r=40, t=10, b=40),
     )
     st.plotly_chart(price_fig, use_container_width=True)
+
+# --- Latency ---
+st.subheader("Latency")
+
+if not has_latency:
+    st.info(
+        "No latency column found in the CSV (expected: latency_us). Run the engine version that logs latency to enable this view."
+    )
+else:
+    lat = df.dropna(subset=["latency_us"]).copy()
+    # Some rows may legitimately have 0 latency (e.g., older logs or metadata mishaps).
+    lat = lat[lat["latency_us"] >= 0].copy()
+
+    if lat.empty:
+        st.info("No latency samples yet.")
+    else:
+        latest_latency = float(lat["latency_us"].iloc[-1])
+        p50 = float(lat["latency_us"].quantile(0.50))
+        p95 = float(lat["latency_us"].quantile(0.95))
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Latency (latest, μs)", f"{latest_latency:.0f}")
+        m2.metric("Latency p50 (μs)", f"{p50:.0f}")
+        m3.metric("Latency p95 (μs)", f"{p95:.0f}")
+
+        latency_fig = go.Figure()
+        latency_fig.add_trace(
+            go.Scatter(
+                x=lat["t_seconds"],
+                y=lat["latency_us"],
+                mode="lines",
+                name="latency_us",
+                hovertemplate="t=%{x:.6f}s<br>latency=%{y:.0f}μs<extra></extra>",
+            )
+        )
+        latency_fig.update_layout(
+            xaxis_title="Time (s since start)",
+            yaxis_title="Latency (μs)",
+            margin=dict(l=40, r=40, t=10, b=40),
+        )
+        st.plotly_chart(latency_fig, use_container_width=True)
